@@ -75,6 +75,22 @@ static uint8_t current_key_row                          = 0;   // key row scan c
 #    if (SN32F2XX_PWM_CONTROL == SOFTWARE_PWM)
 static uint8_t led_duty_cycle[SN32F2XX_RGB_MATRIX_COLS] = {0}; // track the channel duty cycle
 #    endif
+/* Opt-in multi-timer hardware PWM. A board whose columns do not all fit on a single
+   CT16 timer (e.g. SN32F290: 15 columns > 12 CT16B1 channels) supplies
+   SN32F2XX_PWM_COL_MAP as an initialiser of {PWMDriver*, channel} pairs in COL_PINS
+   order. Without it every column stays on PWMD1 and behaviour is unchanged. */
+#    if defined(SN32F2XX_PWM_MULTI_TIMER)
+typedef struct {
+    PWMDriver *drv;
+    uint8_t    ch;
+} sn32_pwm_col_t;
+static const sn32_pwm_col_t sn32_pwm_col_map[SN32F2XX_RGB_MATRIX_COLS] = SN32F2XX_PWM_COL_MAP;
+#        define COL_PWM_DRV(col) (sn32_pwm_col_map[col].drv)
+#        define COL_PWM_CH(col)  (sn32_pwm_col_map[col].ch)
+#    else
+#        define COL_PWM_DRV(col) (&PWMD1)
+#        define COL_PWM_CH(col)  (chan_col_order[col])
+#    endif
 #elif (SN32F2XX_PWM_DIRECTION == ROW2COL)
 /* make sure to `#define MATRIX_UNSELECT_DRIVE_HIGH` in this configuration*/
 static uint8_t chan_row_order[SN32F2XX_RGB_MATRIX_ROWS_HW] = {0}; // track the channel row order
@@ -94,7 +110,12 @@ static matrix_row_t  shared_matrix[MATRIX_ROWS]; // scan values
 static volatile bool matrix_locked  = false;     // matrix update check
 static volatile bool matrix_scanned = false;
 #endif // SHARED MATRIX
-static const uint32_t periodticks                               = RGB_MATRIX_MAXIMUM_BRIGHTNESS;
+// +1 so the up-counter's period is MAXIMUM_BRIGHTNESS+1 ticks: pwm_lld_start
+// programs the period match as (period - 1), so a full-scale duty of
+// RGB_MATRIX_MAXIMUM_BRIGHTNESS still lands a match. Without the +1 the counter
+// resets at MAXIMUM_BRIGHTNESS-1, the 100% match never fires, and the channel
+// goes dark at exactly full brightness. Costs one extra tick per PWM period.
+static const uint32_t periodticks                               = RGB_MATRIX_MAXIMUM_BRIGHTNESS + 1;
 static const uint32_t freq                                      = (RGB_MATRIX_HUE_STEP * RGB_MATRIX_SAT_STEP * RGB_MATRIX_VAL_STEP * RGB_MATRIX_SPD_STEP * RGB_MATRIX_LED_PROCESS_LIMIT);
 static const pin_t    led_row_pins[SN32F2XX_RGB_MATRIX_ROWS_HW] = SN32F2XX_RGB_MATRIX_ROW_PINS; // We expect a R,B,G order here
 static const pin_t    led_col_pins[SN32F2XX_RGB_MATRIX_COLS]    = SN32F2XX_RGB_MATRIX_COL_PINS;
@@ -122,8 +143,11 @@ static void rgb_callback(PWMDriver *pwmp);
 #    error Driver is MCU specific to the Sonix SN32F2 family.
 #endif // !defined(SN32F2)
 
-#if (defined(SN32F240B) || defined(SN32F240C))
-/* PWM configuration structure. We use timer CT16B1 with 24 channels. */
+#if (defined(SN32F240B) || defined(SN32F240C) || defined(SN32F290))
+/* PWM configuration structure. On F240B/C this is CT16B1 with 24 channels; on
+ * F290 CT16B1 has only 12 usable channels, but with SOFTWARE_PWM the timer is
+ * used solely as a free-running counter + periodic ISR, so the channel count is
+ * irrelevant (rgb_callback bit-bangs the LED pins directly). */
 static PWMConfig pwmcfg = {
     freq,        /* PWM clock frequency. */
     periodticks, /* PWM period = periodticks * (1 / CH_CFG_ST_FREQUENCY) ≈ 255 * (1 / 187500) ≈ 1.36 ms */
@@ -135,7 +159,42 @@ static PWMConfig pwmcfg = {
     0 /* HW dependent part.*/
 };
 
+#    if defined(SN32F2XX_PWM_MULTI_TIMER)
+/* Extra per-timer configs for the columns that spill over to CT16B0 / CT16B2.
+   Channel modes are filled in by rgb_ch_ctrl() from SN32F2XX_PWM_COL_MAP. */
+static PWMConfig pwmcfg_b0 = {
+    freq,
+    periodticks,
+    NULL,
+    {[0 ... PWM_CHANNELS - 1] = {PWM_OUTPUT_DISABLED, NULL, 0}},
+    0};
+static PWMConfig pwmcfg_b2 = {
+    freq,
+    periodticks,
+    NULL,
+    {[0 ... PWM_CHANNELS - 1] = {PWM_OUTPUT_DISABLED, NULL, 0}},
+    0};
+
+/* Resolve a column's PWMDriver to its owning PWMConfig. */
+static PWMConfig *sn32_pwm_cfg_for(PWMDriver *drv) {
+    if (drv == &PWMD0) return &pwmcfg_b0;
+    if (drv == &PWMD2) return &pwmcfg_b2;
+    return &pwmcfg; /* PWMD1 */
+}
+#    endif // SN32F2XX_PWM_MULTI_TIMER
+
 static void rgb_ch_ctrl(PWMConfig *cfg) {
+#    if defined(SN32F2XX_PWM_MULTI_TIMER)
+    /* Multi-timer: the column->(timer,channel) mapping and pin-mux are fixed by the
+       board (SN32F2XX_PWM_COL_MAP + the SN_PFPA writes in sn32f2xx_init). Just mark
+       each used channel active on its owning timer's config. */
+    for (uint8_t i = 0; i < SN32F2XX_RGB_MATRIX_COLS; i++) {
+        if (led_col_pins[i] > C15) continue; // Only P0.0..P2.15 can be PWM outputs
+        chan_col_order[i]                                        = sn32_pwm_col_map[i].ch;
+        sn32_pwm_cfg_for(sn32_pwm_col_map[i].drv)->channels[sn32_pwm_col_map[i].ch].mode = SN32F2XX_PWM_OUTPUT_ACTIVE_LEVEL;
+    }
+    return;
+#    endif // SN32F2XX_PWM_MULTI_TIMER
     /* Enable PWM function, IOs and select the PWM modes for the LED pins */
 #    if (SN32F2XX_PWM_DIRECTION == COL2ROW)
     for (uint8_t i = 0; i < SN32F2XX_RGB_MATRIX_COLS; i++) {
@@ -345,7 +404,7 @@ static void shared_matrix_rgb_disable_output(void) {
     // Disable PWM outputs on column pins
     for (uint8_t y = 0; y < SN32F2XX_RGB_MATRIX_COLS; y++) {
 #    if (SN32F2XX_PWM_CONTROL == HARDWARE_PWM)
-        pwmDisableChannel(&PWMD1, chan_col_order[y]);
+        pwmDisableChannel(COL_PWM_DRV(y), COL_PWM_CH(y));
 #    elif (SN32F2XX_PWM_CONTROL == SOFTWARE_PWM)
         gpio_set_pin_input(led_col_pins[y]);
 #    endif // SN32F2XX_PWM_CONTROL
@@ -397,13 +456,13 @@ static void update_pwm_channels(PWMDriver *pwmp) {
 #    if (SN32F2XX_PWM_CONTROL == HARDWARE_PWM)
         switch (current_row % SN32F2XX_RGB_MATRIX_ROW_CHANNELS) {
             case 0:
-                pwmEnableChannel(pwmp, chan_col_order[current_key_col], led_state[led_index].b);
+                pwmEnableChannel(COL_PWM_DRV(current_key_col), COL_PWM_CH(current_key_col), led_state[led_index].b);
                 break;
             case 1:
-                pwmEnableChannel(pwmp, chan_col_order[current_key_col], led_state[led_index].g);
+                pwmEnableChannel(COL_PWM_DRV(current_key_col), COL_PWM_CH(current_key_col), led_state[led_index].g);
                 break;
             case 2:
-                pwmEnableChannel(pwmp, chan_col_order[current_key_col], led_state[led_index].r);
+                pwmEnableChannel(COL_PWM_DRV(current_key_col), COL_PWM_CH(current_key_col), led_state[led_index].r);
                 break;
             default:;
         }
@@ -567,6 +626,15 @@ static void rgb_callback(PWMDriver *pwmp) {
     chSysLockFromISR();
     // Advance the timer to just before the wrap-around, that will start a new PWM cycle
     pwm_lld_change_counter(pwmp, UINT16_MAX);
+#if defined(SN32F2XX_PWM_MULTI_TIMER)
+    // Re-arm the auxiliary PWM timers on the same boundary as PWMD1. This is what
+    // actually keeps their hardware PWM phase-locked to the row scan every period;
+    // without it they free-run and drift (irregular flicker + one-phase colour
+    // shift). Both share PWMD1's clock and period, so a co-located re-arm holds them
+    // in lockstep.
+    pwm_lld_change_counter(&PWMD0, UINT16_MAX);
+    pwm_lld_change_counter(&PWMD2, UINT16_MAX);
+#endif
     // Enable the interrupt
     pwmEnablePeriodicNotificationI(pwmp);
     chSysUnlockFromISR();
@@ -583,7 +651,7 @@ void sn32f2xx_init(void) {
     }
 
     // Determine which PWM channels we need to control
-#if (defined(SN32F240B) || defined(SN32F240C))
+#if (defined(SN32F240B) || defined(SN32F240C) || defined(SN32F290))
     rgb_ch_ctrl(&pwmcfg);
 #elif defined(SN32F260)
     rgb_ch_ctrl();
@@ -596,7 +664,38 @@ void sn32f2xx_init(void) {
     }
 #endif // SHARED_MATRIX
 
+#if defined(SN32F2XX_PWM_MULTI_TIMER)
+    /* Program the pin-mux for the columns spread across CT16B0/B1/B2. The three
+       constants are board-specific (see docs/HARDWARE_PWM.md). */
+#    if defined(SN32F2XX_PWM_PFPA_CT16B0)
+    SN_PFPA->CT16B0 = SN32F2XX_PWM_PFPA_CT16B0;
+#    endif
+#    if defined(SN32F2XX_PWM_PFPA_CT16B1)
+    SN_PFPA->CT16B1 = SN32F2XX_PWM_PFPA_CT16B1;
+#    endif
+#    if defined(SN32F2XX_PWM_PFPA_CT16B2)
+    SN_PFPA->CT16B2 = SN32F2XX_PWM_PFPA_CT16B2;
+#    endif
+    /* All three timers share HCLK. Only PWMD1 drives the row-advance callback,
+       which reloads the duty of every column (across all three timers) once per
+       period. For that to land in the right PWM cycle on PWMD0/PWMD2 they must be
+       phase-locked to PWMD1. */
+    pwmStart(&PWMD0, &pwmcfg_b0);
     pwmStart(&PWMD1, &pwmcfg);
+    pwmStart(&PWMD2, &pwmcfg_b2);
+    /* pwmStart() launches the counters a few instructions apart, leaving a fixed
+       phase offset; the PWMD1 ISR then writes PWMD0/PWMD2 duties mid-cycle, which
+       glitches (irregular flicker + one-phase colour shift). Reset all three
+       counters together so they share a cycle boundary; identical periods on a
+       shared clock keep them locked afterwards. */
+    chSysLock();
+    pwm_lld_change_counter(&PWMD0, 0);
+    pwm_lld_change_counter(&PWMD1, 0);
+    pwm_lld_change_counter(&PWMD2, 0);
+    chSysUnlock();
+#else
+    pwmStart(&PWMD1, &pwmcfg);
+#endif // SN32F2XX_PWM_MULTI_TIMER
     shared_matrix_rgb_enable();
 }
 
