@@ -1,0 +1,3 @@
+# Patch files must be byte-preserved: they match CRLF ChibiOS-Contrib sources, and
+# normalising them to LF breaks `git apply` against the CRLF submodule tree.
+*.diff -text

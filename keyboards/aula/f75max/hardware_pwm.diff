@@ -1,0 +1,689 @@
+diff --git a/os/hal/ports/SN32/LLD/SN32F2xx/CT/hal_pwm_lld.c b/os/hal/ports/SN32/LLD/SN32F2xx/CT/hal_pwm_lld.c
+index c7771f95d6..90c6d4895a 100644
+--- a/os/hal/ports/SN32/LLD/SN32F2xx/CT/hal_pwm_lld.c
++++ b/os/hal/ports/SN32/LLD/SN32F2xx/CT/hal_pwm_lld.c
+@@ -38,9 +38,15 @@
+  * @brief   PWMD1 driver identifier.
+  * @note    The driver PWMD1 allocates the complex timer CT16B1 when enabled.
+  */
++#    if SN32_PWM_USE_CT16B0 || defined(__DOXYGEN__)
++PWMDriver PWMD0;
++#    endif
+ #    if SN32_PWM_USE_CT16B1 || defined(__DOXYGEN__)
+ PWMDriver PWMD1;
+ #    endif
++#    if SN32_PWM_USE_CT16B2 || defined(__DOXYGEN__)
++PWMDriver PWMD2;
++#    endif
+ 
+ /*===========================================================================*/
+ /* Driver local variables and types.                                         */
+@@ -54,6 +60,19 @@ PWMDriver PWMD1;
+ /* Driver interrupt handlers.                                                */
+ /*===========================================================================*/
+ 
++#    if SN32_PWM_USE_CT16B0 || defined(__DOXYGEN__)
++#        if !defined(SN32_CT16B0_SUPPRESS_ISR)
++#            if !defined(SN32_CT16B0_HANDLER)
++#                error "SN32_CT16B0_HANDLER not defined"
++#            endif
++OSAL_IRQ_HANDLER(SN32_CT16B0_HANDLER) {
++    OSAL_IRQ_PROLOGUE();
++    pwm_lld_serve_interrupt(&PWMD0);
++    OSAL_IRQ_EPILOGUE();
++}
++#        endif
++#    endif     /* SN32_PWM_USE_CT16B0 */
++
+ #    if SN32_PWM_USE_CT16B1 || defined(__DOXYGEN__)
+ #        if !defined(SN32_CT16B1_SUPPRESS_ISR)
+ #            if !defined(SN32_CT16B1_HANDLER)
+@@ -71,9 +90,66 @@ OSAL_IRQ_HANDLER(SN32_CT16B1_HANDLER) {
+ 
+     OSAL_IRQ_EPILOGUE();
+ }
+-#        endif /* !defined(SN32_CT16B0_SUPPRESS_ISR) */
++#        endif /* !defined(SN32_CT16B1_SUPPRESS_ISR) */
+ #    endif     /* SN32_PWM_USE_CT16B1 */
+ 
++#    if SN32_PWM_USE_CT16B2 || defined(__DOXYGEN__)
++#        if !defined(SN32_CT16B2_SUPPRESS_ISR)
++#            if !defined(SN32_CT16B2_HANDLER)
++#                error "SN32_CT16B2_HANDLER not defined"
++#            endif
++OSAL_IRQ_HANDLER(SN32_CT16B2_HANDLER) {
++    OSAL_IRQ_PROLOGUE();
++    pwm_lld_serve_interrupt(&PWMD2);
++    OSAL_IRQ_EPILOGUE();
++}
++#        endif
++#    endif     /* SN32_PWM_USE_CT16B2 */
++
++/*===========================================================================*/
++/* Driver local functions.                                                   */
++/*===========================================================================*/
++
++/**
++ * @brief   Whether a timer packs enable / IO-enable / mode into a single
++ *          PWMCTRL register (protected by the 0x5A PWM key), rather than using
++ *          the separate PWMENB / PWMIOENB registers.
++ * @details On SN32F280/F290 only CT16B1 has PWMENB/PWMIOENB; CT16B0/B2/B5 do
++ *          not, and configure everything through PWMCTRL. On other devices the
++ *          classic PWMENB/PWMIOENB model applies to all timers.
++ */
++static inline bool pwm_lld_pwmctrl_only(const PWMDriver *pwmp) {
++#    if (defined(SN32F280) || defined(SN32F290))
++#        if SN32_PWM_USE_CT16B1
++    return pwmp != &PWMD1;
++#        else
++    (void)pwmp;
++    return true;
++#        endif
++#    else
++    (void)pwmp;
++    return false;
++#    endif
++}
++
++/* PWMCTRL (n=0,2,5) bit layout: PWMnEN at bit n, PWMnMODE at bit (4 + 2n),
++   PWMnIOEN at bit (20 + n), and the 0x5A write key in bits [31:24]. */
++#    define CT16_PWMCTRLONLY_EN(n)    (1u << (n))
++#    define CT16_PWMCTRLONLY_MODE(n, mode) ((uint32_t)(mode) << (4 + 2 * (n)))
++#    define CT16_PWMCTRLONLY_IOEN(n)  (1u << (20 + (n)))
++/* In the n=0,2,5 MCTRL register the PWM cycle-length register is MR9, whose
++   reset-enable (MR9RST) is bit 22 -- not at the regular (n%10)*3 position. */
++#    define CT16_PWMCTRLONLY_MR9RST   (1u << 22)
++
++/**
++ * @brief   Index of the match register that sets the PWM cycle length (period).
++ * @details CT16B1 uses MR[channels] (MR12). CT16B0/B2/B5 have only MR0-3 for the
++ *          duty outputs plus a dedicated MR9 for the cycle length.
++ */
++static inline uint8_t pwm_lld_period_mr(const PWMDriver *pwmp) {
++    return pwm_lld_pwmctrl_only(pwmp) ? 9 : pwmp->channels;
++}
++
+ /*===========================================================================*/
+ /* Driver exported functions.                                                */
+ /*===========================================================================*/
+@@ -84,10 +160,19 @@ OSAL_IRQ_HANDLER(SN32_CT16B1_HANDLER) {
+  * @notapi
+  */
+ void pwm_lld_init(void) {
++    /* Driver initialization. Each timer records its own channel count so the rest
++     * of the driver can use pwmp->channels instead of a single global. */
++#    if SN32_PWM_USE_CT16B0
++    pwmObjectInit(&PWMD0);
++    PWMD0.channels = SN32_CT16B0_CHANNELS - 1;
++#    endif
+ #    if SN32_PWM_USE_CT16B1
+-    /* Driver initialization.*/
+     pwmObjectInit(&PWMD1);
+-    PWMD1.channels = PWM_CHANNELS;
++    PWMD1.channels = SN32_CT16B1_CHANNELS - 1;
++#    endif
++#    if SN32_PWM_USE_CT16B2
++    pwmObjectInit(&PWMD2);
++    PWMD2.channels = SN32_CT16B2_CHANNELS - 1;
+ #    endif
+ }
+ 
+@@ -109,6 +194,17 @@ void pwm_lld_start(PWMDriver *pwmp) {
+ 
+     if (pwmp->state == PWM_STOP) {
+         /* Clock activation and timer reset.*/
++#    if SN32_PWM_USE_CT16B0
++        if (&PWMD0 == pwmp) {
++            sys1EnableCT16B0();
++            sys1ResetCT16B0();
++            CT16B0_ResetTimer();
++#        if !defined(SN32_CT16B0_SUPPRESS_ISR)
++            nvicEnableVector(SN32_CT16B0_NUMBER, SN32_PWM_CT16B0_IRQ_PRIORITY);
++#        endif
++            pwmp->clock = PWM_CLK;
++        }
++#    endif
+ #    if SN32_PWM_USE_CT16B1
+         if (&PWMD1 == pwmp) {
+             sys1EnableCT16B1();
+@@ -120,12 +216,23 @@ void pwm_lld_start(PWMDriver *pwmp) {
+             pwmp->clock = PWM_CLK;
+         }
+ #    endif
++#    if SN32_PWM_USE_CT16B2
++        if (&PWMD2 == pwmp) {
++            sys1EnableCT16B2();
++            sys1ResetCT16B2();
++            CT16B2_ResetTimer();
++#        if !defined(SN32_CT16B2_SUPPRESS_ISR)
++            nvicEnableVector(SN32_CT16B2_NUMBER, SN32_PWM_CT16B2_IRQ_PRIORITY);
++#        endif
++            pwmp->clock = PWM_CLK;
++        }
++#    endif
+ 
+ #    if (defined(SN32F240B) || defined(SN32F240C))
+         /* PFPA - Map all PWM outputs to their PWM A pins */
+         SN_PFPA->CT16B1 = 0x00000000;
+         /* PFPA assignment for PWM B-pin mapping.*/
+-        for (uint8_t i = 0; i < PWM_CHANNELS; i++) {
++        for (uint8_t i = 0; i < pwmp->channels; i++) {
+             if (pwmp->config->channels[i].pfpamsk != 0) {
+                 SN_PFPA->CT16B1 |= (1 << i);
+             }
+@@ -133,29 +240,46 @@ void pwm_lld_start(PWMDriver *pwmp) {
+ #    endif
+ 
+         /* Channel PWM mode selection and polarities setup.*/
+-        pwmctrl                                = 0;
+-        pwmctrl2                               = 0;
+-        pwmen                                  = 0;
+-        pwmioen                                = 0;
+-        volatile uint32_t *pwmctrl_registers[] = {&pwmctrl, &pwmctrl2};
+-        for (uint8_t i = 0; i < PWM_CHANNELS; i++) {
+-            switch (pwmp->config->channels[i].mode & PWM_OUTPUT_MASK) {
+-                case PWM_OUTPUT_ACTIVE_LOW:
+-                    *pwmctrl_registers[(i > 15) ? 1 : 0] |= mskCT16_PWMnMODE_1(i);
+-                    pwmen |= mskCT16_PWMnEN_EN(i);
+-                    pwmioen |= mskCT16_PWMnIOEN_EN(i);
+-                    break;
+-                case PWM_OUTPUT_ACTIVE_HIGH:
+-                    *pwmctrl_registers[(i > 15) ? 1 : 0] |= mskCT16_PWMnMODE_2(i);
+-                    pwmen |= mskCT16_PWMnEN_EN(i);
+-                    pwmioen |= mskCT16_PWMnIOEN_EN(i);
+-                    break;
++        if (pwm_lld_pwmctrl_only(pwmp)) {
++            /* CT16B0/B2/B5 (F280/F290): enable, IO-enable and mode all live in the
++               single PWMCTRL register, and the write needs the 0x5A PWM key. */
++            uint32_t pwmctrl_only = CT16_PWM_KEY;
++            for (uint8_t i = 0; i < pwmp->channels; i++) {
++                switch (pwmp->config->channels[i].mode & PWM_OUTPUT_MASK) {
++                    case PWM_OUTPUT_ACTIVE_LOW:
++                        pwmctrl_only |= CT16_PWMCTRLONLY_EN(i) | CT16_PWMCTRLONLY_IOEN(i) | CT16_PWMCTRLONLY_MODE(i, CT16_PWMnMODE_1);
++                        break;
++                    case PWM_OUTPUT_ACTIVE_HIGH:
++                        pwmctrl_only |= CT16_PWMCTRLONLY_EN(i) | CT16_PWMCTRLONLY_IOEN(i) | CT16_PWMCTRLONLY_MODE(i, CT16_PWMnMODE_2);
++                        break;
++                }
++            }
++            SN32_CT_PWM_SET(pwmp, pwm.PWMCTRL, pwmctrl_only);
++        } else {
++            pwmctrl                                = 0;
++            pwmctrl2                               = 0;
++            pwmen                                  = 0;
++            pwmioen                                = 0;
++            volatile uint32_t *pwmctrl_registers[] = {&pwmctrl, &pwmctrl2};
++            for (uint8_t i = 0; i < pwmp->channels; i++) {
++                switch (pwmp->config->channels[i].mode & PWM_OUTPUT_MASK) {
++                    case PWM_OUTPUT_ACTIVE_LOW:
++                        *pwmctrl_registers[(i > 15) ? 1 : 0] |= mskCT16_PWMnMODE_1(i);
++                        pwmen |= mskCT16_PWMnEN_EN(i);
++                        pwmioen |= mskCT16_PWMnIOEN_EN(i);
++                        break;
++                    case PWM_OUTPUT_ACTIVE_HIGH:
++                        *pwmctrl_registers[(i > 15) ? 1 : 0] |= mskCT16_PWMnMODE_2(i);
++                        pwmen |= mskCT16_PWMnEN_EN(i);
++                        pwmioen |= mskCT16_PWMnIOEN_EN(i);
++                        break;
++                }
+             }
++            SN32_CT_PWM_SET(pwmp, pwm.PWMCTRL, pwmctrl);
++            SN32_CT_PWM_SET(pwmp, pwm.PWMCTRL2, pwmctrl2);
++            SN32_CT_PWM_SET(pwmp, pwm.PWMENB, pwmen);
++            SN32_CT_PWM_SET(pwmp, pwm.PWMIOENB, pwmioen);
+         }
+-        SN32_CT_PWM_SET(pwmp, pwm.PWMCTRL, pwmctrl);
+-        SN32_CT_PWM_SET(pwmp, pwm.PWMCTRL2, pwmctrl2);
+-        SN32_CT_PWM_SET(pwmp, pwm.PWMENB, pwmen);
+-        SN32_CT_PWM_SET(pwmp, pwm.PWMIOENB, pwmioen);
+     } else {
+         /* Driver re-configuration scenario, it must be stopped first.*/
+         SN32_CT_PWM_SET(pwmp, config.TMRCTRL, CT16_CEN_DIS); /* Timer disabled.*/
+@@ -171,21 +295,28 @@ void pwm_lld_start(PWMDriver *pwmp) {
+                       ((psc + 1) * pwmp->config->frequency) == pwmp->clock,
+                   "invalid frequency");
+     SN32_CT_PWM_SET(pwmp, config.PRE, psc);
+-    SN32_CT_PWM_SET(pwmp, MR[PWM_CHANNELS], pwmp->period - 1);
++    uint8_t period_mr = pwm_lld_period_mr(pwmp);
++    SN32_CT_PWM_SET(pwmp, MR[period_mr], pwm_lld_mr_value(pwmp, pwmp->period - 1));
+ 
+ #    if SN32_PWM_USE_ONESHOT || defined(__DOXYGEN__)
+     volatile uint32_t *mctrl_registers[] = {SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL), SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL2), SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL3)};
+     // Determine which MCTRL register to use
+-    volatile uint32_t *reg = mctrl_registers[MCTRL_INDEX];
++    volatile uint32_t *reg = mctrl_registers[pwmp->channels / 10];
+     if (reg != NULL) {
+-        *reg |= mskCT16_MRnSTOP_EN(PWM_CHANNELS);
++        *reg |= mskCT16_MRnSTOP_EN(pwmp->channels);
+     }
+ #    elif !defined(SN32_PWM_NO_RESET)
+-    volatile uint32_t *mctrl_registers[] = {SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL), SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL2), SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL3)};
+-    // Determine which MCTRL register to use
+-    volatile uint32_t *reg = mctrl_registers[MCTRL_INDEX];
+-    if (reg != NULL) {
+-        *reg |= mskCT16_MRnRST_EN(PWM_CHANNELS);
++    if (pwm_lld_pwmctrl_only(pwmp)) {
++        /* CT16B0/B2/B5: enable MR9 reset in MCTRL; the write needs the 0x5A key. */
++        uint32_t mctrl = (SN32_CT_PWM_GET(pwmp, match.MCTRL) & 0x00FFFFFF) | CT16_PWM_KEY | CT16_PWMCTRLONLY_MR9RST;
++        SN32_CT_PWM_SET(pwmp, match.MCTRL, mctrl);
++    } else {
++        volatile uint32_t *mctrl_registers[] = {SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL), SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL2), SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL3)};
++        // Determine which MCTRL register to use
++        volatile uint32_t *reg = mctrl_registers[pwmp->channels / 10];
++        if (reg != NULL) {
++            *reg |= mskCT16_MRnRST_EN(pwmp->channels);
++        }
+     }
+ #    endif
+     SN32_CT_PWM_AND(pwmp, irq.IC, mskCT_IC_Clear(SN32_CT16B1_MAX_CHANNELS)); /* Clear pending IRQs.*/
+@@ -207,6 +338,14 @@ void pwm_lld_stop(PWMDriver *pwmp) {
+         SN32_CT_PWM_SET(pwmp, config.TMRCTRL, CT16_CEN_DIS);                     /* Timer disabled.    */
+         SN32_CT_PWM_AND(pwmp, irq.IC, mskCT_IC_Clear(SN32_CT16B1_MAX_CHANNELS)); /* Clear pending IRQs.*/
+ 
++#    if SN32_PWM_USE_CT16B0
++        if (&PWMD0 == pwmp) {
++#        if !defined(SN32_CT16B0_SUPPRESS_ISR)
++            nvicDisableVector(SN32_CT16B0_NUMBER);
++#        endif
++            sys1DisableCT16B0();
++        }
++#    endif
+ #    if SN32_PWM_USE_CT16B1
+         if (&PWMD1 == pwmp) {
+ #        if !defined(SN32_CT16B1_SUPPRESS_ISR)
+@@ -214,6 +353,14 @@ void pwm_lld_stop(PWMDriver *pwmp) {
+ #        endif
+             sys1DisableCT16B1();
+         }
++#    endif
++#    if SN32_PWM_USE_CT16B2
++        if (&PWMD2 == pwmp) {
++#        if !defined(SN32_CT16B2_SUPPRESS_ISR)
++            nvicDisableVector(SN32_CT16B2_NUMBER);
++#        endif
++            sys1DisableCT16B2();
++        }
+ #    endif
+     }
+ }
+@@ -232,10 +379,15 @@ void pwm_lld_stop(PWMDriver *pwmp) {
+  * @notapi
+  */
+ void pwm_lld_enable_channel(PWMDriver *pwmp, pwmchannel_t channel, pwmcnt_t width) {
+-    if (channel < PWM_CHANNELS) {
++    if (channel < pwmp->channels) {
+         /* Changing channel duty cycle on the fly.*/
+-        SN32_CT_PWM_SET(pwmp, MR[channel], width);
+-        SN32_CT_PWM_OR(pwmp, pwm.PWMIOENB, mskCT16_PWMnIOEN_EN(channel));
++        SN32_CT_PWM_SET(pwmp, MR[channel], pwm_lld_mr_value(pwmp, width));
++        if (pwm_lld_pwmctrl_only(pwmp)) {
++            /* IO-enable lives in PWMCTRL; re-supply the key so the write sticks. */
++            SN32_CT_PWM_OR(pwmp, pwm.PWMCTRL, CT16_PWM_KEY | CT16_PWMCTRLONLY_IOEN(channel));
++        } else {
++            SN32_CT_PWM_OR(pwmp, pwm.PWMIOENB, mskCT16_PWMnIOEN_EN(channel));
++        }
+     }
+ }
+ 
+@@ -252,9 +404,16 @@ void pwm_lld_enable_channel(PWMDriver *pwmp, pwmchannel_t channel, pwmcnt_t widt
+  * @notapi
+  */
+ void pwm_lld_disable_channel(PWMDriver *pwmp, pwmchannel_t channel) {
+-    if (channel < PWM_CHANNELS) {
++    if (channel < pwmp->channels) {
+         SN32_CT_PWM_OR(pwmp, irq.IC, mskCT16_MRnIC(channel));
+-        SN32_CT_PWM_AND(pwmp, pwm.PWMIOENB, ~mskCT16_PWMnIOEN_EN(channel));
++        if (pwm_lld_pwmctrl_only(pwmp)) {
++            /* Clear the IOEN bit in PWMCTRL while re-supplying the key (a plain
++               AND would drop the key and be ignored). */
++            uint32_t v = (SN32_CT_PWM_GET(pwmp, pwm.PWMCTRL) & ~CT16_PWMCTRLONLY_IOEN(channel)) | CT16_PWM_KEY;
++            SN32_CT_PWM_SET(pwmp, pwm.PWMCTRL, v);
++        } else {
++            SN32_CT_PWM_AND(pwmp, pwm.PWMIOENB, ~mskCT16_PWMnIOEN_EN(channel));
++        }
+     }
+ }
+ 
+@@ -270,9 +429,9 @@ void pwm_lld_disable_channel(PWMDriver *pwmp, pwmchannel_t channel) {
+ void pwm_lld_enable_periodic_notification(PWMDriver *pwmp) {
+     volatile uint32_t *mctrl_registers[] = {SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL), SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL2), SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL3)};
+     // Determine which MCTRL register to use
+-    volatile uint32_t *reg = mctrl_registers[MCTRL_INDEX];
++    volatile uint32_t *reg = mctrl_registers[pwmp->channels / 10];
+     if (reg != NULL) {
+-        *reg |= mskCT16_MRnIE_EN(PWM_CHANNELS);
++        *reg |= mskCT16_MRnIE_EN(pwmp->channels);
+     }
+ }
+ 
+@@ -288,9 +447,9 @@ void pwm_lld_enable_periodic_notification(PWMDriver *pwmp) {
+ void pwm_lld_disable_periodic_notification(PWMDriver *pwmp) {
+     volatile uint32_t *mctrl_registers[] = {SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL), SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL2), SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL3)};
+     // Determine which MCTRL register to use
+-    volatile uint32_t *reg = mctrl_registers[MCTRL_INDEX];
++    volatile uint32_t *reg = mctrl_registers[pwmp->channels / 10];
+     if (reg != NULL) {
+-        *reg &= ~mskCT16_MRnIE_EN(PWM_CHANNELS);
++        *reg &= ~mskCT16_MRnIE_EN(pwmp->channels);
+     }
+ }
+ 
+@@ -308,7 +467,7 @@ void pwm_lld_disable_periodic_notification(PWMDriver *pwmp) {
+ void pwm_lld_enable_channel_notification(PWMDriver *pwmp, pwmchannel_t channel) {
+     volatile uint32_t *mctrl_registers[] = {SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL), SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL2), SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL3)};
+     // Determine which MCTRL register to use
+-    volatile uint32_t *reg = mctrl_registers[MCTRL_INDEX];
++    volatile uint32_t *reg = mctrl_registers[pwmp->channels / 10];
+     if (reg != NULL) {
+         *reg |= mskCT16_MRnIE_EN(channel);
+     }
+@@ -328,7 +487,7 @@ void pwm_lld_enable_channel_notification(PWMDriver *pwmp, pwmchannel_t channel)
+ void pwm_lld_disable_channel_notification(PWMDriver *pwmp, pwmchannel_t channel) {
+     volatile uint32_t *mctrl_registers[] = {SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL), SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL2), SN32_CT_PWM_GET_ADDR(pwmp, match.MCTRL3)};
+     // Determine which MCTRL register to use
+-    volatile uint32_t *reg = mctrl_registers[MCTRL_INDEX];
++    volatile uint32_t *reg = mctrl_registers[pwmp->channels / 10];
+     if (reg != NULL) {
+         *reg &= ~mskCT16_MRnIE_EN(channel);
+     }
+@@ -349,10 +508,10 @@ void pwm_lld_serve_interrupt(PWMDriver *pwmp) {
+ 
+     ris = SN32_CT_PWM_GET(pwmp, irq.RIS);
+     SN32_CT_PWM_SET(pwmp, irq.IC, ris);
+-    for (int i = 0; i < PWM_CHANNELS; i++) {
++    for (int i = 0; i < pwmp->channels; i++) {
+         if (((ris & mskCT16_MRnIF(i)) != 0) && (pwmp->config->channels[i].callback != NULL)) pwmp->config->channels[i].callback(pwmp);
+     }
+-    if (((ris & mskCT16_MRnIF(PWM_CHANNELS)) != 0) && (pwmp->config->callback != NULL)) pwmp->config->callback(pwmp);
++    if (((ris & mskCT16_MRnIF(pwmp->channels)) != 0) && (pwmp->config->callback != NULL)) pwmp->config->callback(pwmp);
+ }
+ 
+ #endif /* HAL_USE_PWM */
+diff --git a/os/hal/ports/SN32/LLD/SN32F2xx/CT/hal_pwm_lld.h b/os/hal/ports/SN32/LLD/SN32F2xx/CT/hal_pwm_lld.h
+index 195a6346c5..2126797a21 100644
+--- a/os/hal/ports/SN32/LLD/SN32F2xx/CT/hal_pwm_lld.h
++++ b/os/hal/ports/SN32/LLD/SN32F2xx/CT/hal_pwm_lld.h
+@@ -63,6 +63,23 @@
+ #if !defined(SN32_PWM_CT16B1_IRQ_PRIORITY) || defined(__DOXYGEN__)
+ #define SN32_PWM_CT16B1_IRQ_PRIORITY         2
+ #endif
++
++/**
++ * @brief   PWMD0 (CT16B0) / PWMD2 (CT16B2) enable switches + IRQ priorities.
++ * @note    Small SN32 timers used to widen the PWM channel count beyond CT16B1.
++ */
++#if !defined(SN32_PWM_USE_CT16B0) || defined(__DOXYGEN__)
++#define SN32_PWM_USE_CT16B0                  FALSE
++#endif
++#if !defined(SN32_PWM_CT16B0_IRQ_PRIORITY) || defined(__DOXYGEN__)
++#define SN32_PWM_CT16B0_IRQ_PRIORITY         2
++#endif
++#if !defined(SN32_PWM_USE_CT16B2) || defined(__DOXYGEN__)
++#define SN32_PWM_USE_CT16B2                  FALSE
++#endif
++#if !defined(SN32_PWM_CT16B2_IRQ_PRIORITY) || defined(__DOXYGEN__)
++#define SN32_PWM_CT16B2_IRQ_PRIORITY         2
++#endif
+ /** @} */
+ 
+ /*===========================================================================*/
+@@ -73,7 +90,7 @@
+ #error "CT16B1 not present in the selected device"
+ #endif
+ 
+-#if !SN32_PWM_USE_CT16B1
++#if !SN32_PWM_USE_CT16B0 && !SN32_PWM_USE_CT16B1 && !SN32_PWM_USE_CT16B2
+ #error "PWM driver activated but no CT peripheral assigned"
+ #endif
+ 
+@@ -209,64 +226,130 @@ struct PWMDriver {
+ /*===========================================================================*/
+ /* Driver macros.                                                            */
+ /*===========================================================================*/
++/* Per-timer accessor variants. The dispatchers below fan out to every enabled
++ * timer; only the one matching `timer` acts (the C compiler still type-checks all
++ * branches, which is fine because every SN32 CT16 struct shares the same
++ * config/match/pwm/irq sub-structs). Multi-timer support (CT16B0/B1/B2) is required
++ * for boards whose PWM axis exceeds one timer's channel count (e.g. SN32F290). */
++#if SN32_PWM_USE_CT16B0
++#define SN32_CT_PWM_SET_CT16B0(timer, field, value)       \
++  do { if ((timer) == &PWMD0) (SN32_CT16B0)->field = (value); } while (0)
++#else
++#define SN32_CT_PWM_SET_CT16B0(timer, field, value)  do { } while (0)
++#endif
+ #if SN32_PWM_USE_CT16B1
+ #define SN32_CT_PWM_SET_CT16B1(timer, field, value)       \
+   do { if ((timer) == &PWMD1) (SN32_CT16B1)->field = (value); } while (0)
+ #else
+-#define SN32_CT_PWM_SET_CT16B1(timer, field, value)       \
+-  do { } while (0)
++#define SN32_CT_PWM_SET_CT16B1(timer, field, value)  do { } while (0)
++#endif
++#if SN32_PWM_USE_CT16B2
++#define SN32_CT_PWM_SET_CT16B2(timer, field, value)       \
++  do { if ((timer) == &PWMD2) (SN32_CT16B2)->field = (value); } while (0)
++#else
++#define SN32_CT_PWM_SET_CT16B2(timer, field, value)  do { } while (0)
+ #endif
+ 
+ #define SN32_CT_PWM_SET(timer, field, value)        \
+   do {                                               \
++    SN32_CT_PWM_SET_CT16B0(timer, field, value);     \
+     SN32_CT_PWM_SET_CT16B1(timer, field, value);     \
++    SN32_CT_PWM_SET_CT16B2(timer, field, value);     \
+   } while (0)
+ 
++#if SN32_PWM_USE_CT16B0
++#define SN32_CT_PWM_OR_CT16B0(timer, field, value)        \
++  do { if ((timer) == &PWMD0) (SN32_CT16B0)->field |= (value); } while (0)
++#else
++#define SN32_CT_PWM_OR_CT16B0(timer, field, value)  do { } while (0)
++#endif
+ #if SN32_PWM_USE_CT16B1
+ #define SN32_CT_PWM_OR_CT16B1(timer, field, value)        \
+   do { if ((timer) == &PWMD1) (SN32_CT16B1)->field |= (value); } while (0)
+ #else
+-#define SN32_CT_PWM_OR_CT16B1(timer, field, value)        \
+-  do { } while (0)
++#define SN32_CT_PWM_OR_CT16B1(timer, field, value)  do { } while (0)
++#endif
++#if SN32_PWM_USE_CT16B2
++#define SN32_CT_PWM_OR_CT16B2(timer, field, value)        \
++  do { if ((timer) == &PWMD2) (SN32_CT16B2)->field |= (value); } while (0)
++#else
++#define SN32_CT_PWM_OR_CT16B2(timer, field, value)  do { } while (0)
+ #endif
+ 
+ #define SN32_CT_PWM_OR(timer, field, value)         \
+   do {                                              \
++    SN32_CT_PWM_OR_CT16B0(timer, field, value);     \
+     SN32_CT_PWM_OR_CT16B1(timer, field, value);     \
++    SN32_CT_PWM_OR_CT16B2(timer, field, value);     \
+   } while (0)
+ 
++#if SN32_PWM_USE_CT16B0
++#define SN32_CT_PWM_AND_CT16B0(timer, field, value)        \
++  do { if ((timer) == &PWMD0) (SN32_CT16B0)->field &= (value); } while (0)
++#else
++#define SN32_CT_PWM_AND_CT16B0(timer, field, value)  do { } while (0)
++#endif
+ #if SN32_PWM_USE_CT16B1
+ #define SN32_CT_PWM_AND_CT16B1(timer, field, value)        \
+   do { if ((timer) == &PWMD1) (SN32_CT16B1)->field &= (value); } while (0)
+ #else
+-#define SN32_CT_PWM_AND_CT16B1(timer, field, value)        \
+-  do { } while (0)
++#define SN32_CT_PWM_AND_CT16B1(timer, field, value)  do { } while (0)
++#endif
++#if SN32_PWM_USE_CT16B2
++#define SN32_CT_PWM_AND_CT16B2(timer, field, value)        \
++  do { if ((timer) == &PWMD2) (SN32_CT16B2)->field &= (value); } while (0)
++#else
++#define SN32_CT_PWM_AND_CT16B2(timer, field, value)  do { } while (0)
+ #endif
+ 
+ #define SN32_CT_PWM_AND(timer, field, value)         \
+   do {                                              \
++    SN32_CT_PWM_AND_CT16B0(timer, field, value);     \
+     SN32_CT_PWM_AND_CT16B1(timer, field, value);     \
++    SN32_CT_PWM_AND_CT16B2(timer, field, value);     \
+   } while (0)
+ 
++#if SN32_PWM_USE_CT16B0
++#define SN32_CT_PWM_GET_CT16B0(timer, cmd) ((timer) == &PWMD0 ? (SN32_CT16B0)->cmd : 0)
++#else
++#define SN32_CT_PWM_GET_CT16B0(timer, cmd) (0)
++#endif
+ #if SN32_PWM_USE_CT16B1
+-#define SN32_CT_PWM_GET_CT16B1(timer, cmd) \
+-  ((timer) == &PWMD1 ? (SN32_CT16B1)->cmd : 0)
++#define SN32_CT_PWM_GET_CT16B1(timer, cmd) ((timer) == &PWMD1 ? (SN32_CT16B1)->cmd : 0)
+ #else
+ #define SN32_CT_PWM_GET_CT16B1(timer, cmd) (0)
+ #endif
++#if SN32_PWM_USE_CT16B2
++#define SN32_CT_PWM_GET_CT16B2(timer, cmd) ((timer) == &PWMD2 ? (SN32_CT16B2)->cmd : 0)
++#else
++#define SN32_CT_PWM_GET_CT16B2(timer, cmd) (0)
++#endif
+ 
++/* Only the matching timer contributes; the others yield 0. */
+ #define SN32_CT_PWM_GET(timer, cmd) \
+-  (SN32_CT_PWM_GET_CT16B1(timer, cmd))
++  (SN32_CT_PWM_GET_CT16B0(timer, cmd) + SN32_CT_PWM_GET_CT16B1(timer, cmd) + SN32_CT_PWM_GET_CT16B2(timer, cmd))
+ 
++#if SN32_PWM_USE_CT16B0
++#define SN32_CT_PWM_GET_ADDR_CT16B0(timer, cmd) ((timer) == &PWMD0 ? &(SN32_CT16B0)->cmd : NULL)
++#else
++#define SN32_CT_PWM_GET_ADDR_CT16B0(timer, cmd) (NULL)
++#endif
+ #if SN32_PWM_USE_CT16B1
+-#define SN32_CT_PWM_GET_ADDR_CT16B1(timer, cmd) \
+-  ((timer) == &PWMD1 ? &(SN32_CT16B1)->cmd : NULL)
++#define SN32_CT_PWM_GET_ADDR_CT16B1(timer, cmd) ((timer) == &PWMD1 ? &(SN32_CT16B1)->cmd : NULL)
+ #else
+ #define SN32_CT_PWM_GET_ADDR_CT16B1(timer, cmd) (NULL)
+ #endif
++#if SN32_PWM_USE_CT16B2
++#define SN32_CT_PWM_GET_ADDR_CT16B2(timer, cmd) ((timer) == &PWMD2 ? &(SN32_CT16B2)->cmd : NULL)
++#else
++#define SN32_CT_PWM_GET_ADDR_CT16B2(timer, cmd) (NULL)
++#endif
+ 
+-#define SN32_CT_PWM_GET_ADDR(timer, cmd) \
+-  (SN32_CT_PWM_GET_ADDR_CT16B1(timer, cmd))
++/* First non-NULL (i.e. the matching timer) wins. */
++#define SN32_CT_PWM_GET_ADDR(timer, cmd)                                          \
++  (SN32_CT_PWM_GET_ADDR_CT16B0(timer, cmd) != NULL ? SN32_CT_PWM_GET_ADDR_CT16B0(timer, cmd) : \
++   SN32_CT_PWM_GET_ADDR_CT16B1(timer, cmd) != NULL ? SN32_CT_PWM_GET_ADDR_CT16B1(timer, cmd) : \
++   SN32_CT_PWM_GET_ADDR_CT16B2(timer, cmd))
+ 
+ /**
+  * @brief   Changes the period of the PWM peripheral.
+@@ -285,7 +368,7 @@ struct PWMDriver {
+  * @notapi
+  */
+ #define pwm_lld_change_period(pwmp, period)                                 \
+-  SN32_CT_PWM_SET((pwmp), MR[PWM_CHANNELS], ((period) - 1))
++  SN32_CT_PWM_SET((pwmp), MR[(pwmp)->channels], pwm_lld_mr_value((pwmp), ((period) - 1)))
+ 
+ /**
+  * @brief   Changes the timer counter of the PWM peripheral.
+@@ -306,9 +389,37 @@ struct PWMDriver {
+ /* External declarations.                                                    */
+ /*===========================================================================*/
+ 
++#if SN32_PWM_USE_CT16B0 && !defined(__DOXYGEN__)
++extern PWMDriver PWMD0;
++#endif
+ #if SN32_PWM_USE_CT16B1 && !defined(__DOXYGEN__)
+ extern PWMDriver PWMD1;
+ #endif
++#if SN32_PWM_USE_CT16B2 && !defined(__DOXYGEN__)
++extern PWMDriver PWMD2;
++#endif
++
++/**
++ * @brief   Returns the value to write into a match (MR) register.
++ * @details On SN32F280/F290 the match registers of every CT16 timer *except*
++ *          CT16B1 are write-protected and require the PWM key (0x5A in the top
++ *          byte) to accept a new value; CT16B1's MR registers are not protected.
++ *          On other devices no key is needed. Writing the key on the small
++ *          timers is what makes their period/duty updates actually take effect.
++ */
++static inline uint32_t pwm_lld_mr_value(const PWMDriver *pwmp, uint32_t value) {
++#if (defined(SN32F280) || defined(SN32F290))
++#if SN32_PWM_USE_CT16B1
++  if (pwmp == &PWMD1) {
++    return value;
++  }
++#endif
++  return CT16_PWM_UNLOCK(value);
++#else
++  (void)pwmp;
++  return value;
++#endif
++}
+ 
+ #ifdef __cplusplus
+ extern "C" {
+diff --git a/os/hal/ports/SN32/LLD/SN32F2xx/SysTick/hal_st_lld.c b/os/hal/ports/SN32/LLD/SN32F2xx/SysTick/hal_st_lld.c
+index 5277a2e94e..faa2485c05 100644
+--- a/os/hal/ports/SN32/LLD/SN32F2xx/SysTick/hal_st_lld.c
++++ b/os/hal/ports/SN32/LLD/SN32F2xx/SysTick/hal_st_lld.c
+@@ -57,6 +57,16 @@
+ #define ST_RESET_CLOCK()                    sys1ResetCT16B1()
+ #define ST_INIT_CLOCK()                     CT16B1_ResetTimer()
+ 
++#elif SN32_ST_USE_TIMER == SN32_TIM_CT16B5
++
++#if !SN32_HAS_CT16B5
++#error "CT16B5 not present in the selected device"
++#endif
++
++#define ST_ENABLE_CLOCK()                   sys1EnableCT16B5()
++#define ST_RESET_CLOCK()                    sys1ResetCT16B5()
++#define ST_INIT_CLOCK()                     CT16B5_ResetTimer()
++
+ #else
+ #error "SN32_ST_USE_TIMER specifies an unsupported timer"
+ #endif
+diff --git a/os/hal/ports/SN32/LLD/SN32F2xx/SysTick/hal_st_lld.h b/os/hal/ports/SN32/LLD/SN32F2xx/SysTick/hal_st_lld.h
+index 796b7d335b..b34ee42e63 100644
+--- a/os/hal/ports/SN32/LLD/SN32F2xx/SysTick/hal_st_lld.h
++++ b/os/hal/ports/SN32/LLD/SN32F2xx/SysTick/hal_st_lld.h
+@@ -32,6 +32,7 @@
+ /*===========================================================================*/
+ #define SN32_TIM_CT16B0 0
+ #define SN32_TIM_CT16B1 1
++#define SN32_TIM_CT16B5 5
+ 
+ /*===========================================================================*/
+ /* Driver pre-compile time settings.                                         */
+@@ -92,6 +93,17 @@
+ #define SN32_ST_TIM                         SN32_CT16B1
+ #define ST_LLD_NUM_ALARMS                   1
+ 
++#elif SN32_ST_USE_TIMER == SN32_TIM_CT16B5
++
++#if defined(SN32_CT16B5_IS_USED)
++#error "ST requires CT16B5 but the timer is already used"
++#else
++#define SN32_CT16B5_IS_USED
++#endif
++
++#define SN32_ST_TIM                         SN32_CT16B5
++#define ST_LLD_NUM_ALARMS                   1
++
+ #else
+ #error "SN32_ST_USE_TIMER specifies an unsupported timer"
+ #endif
+@@ -199,7 +211,7 @@ static inline void st_lld_start_alarm(systime_t abstime) {
+ 
+   /* Save the alarm time in a timer register.  This is needed only to make
+    * st_lld_get_alarm() work. */
+-#if ((defined(SN32F280) || defined(SN32F290)) && SN32_ST_USE_TIMER == SN32_TIM_CT16B0)
++#if ((defined(SN32F280) || defined(SN32F290)) && (SN32_ST_USE_TIMER == SN32_TIM_CT16B0 || SN32_ST_USE_TIMER == SN32_TIM_CT16B5))
+   SN32_ST_TIM->MR[0] = CT16_PWM_UNLOCK(((uint32_t)abstime & SN32_CT16_TC_LIMIT));
+ #else
+   SN32_ST_TIM->MR[0] = ((uint32_t)abstime & SN32_CT16_TC_LIMIT);
