@@ -18,3 +18,5 @@ typedef enum { MODE_USB = 0, MODE_BT = 1, MODE_24G = 2 } conn_mode_t;
 void        f75max_apply_mode(conn_mode_t m);   // called when the mode slider changes (and once at boot)
 conn_mode_t f75max_conn_mode(void);
 void        f75max_load_config(void);        // restore the persisted Bluetooth slot (call before f75max_apply_mode)
+void        f75max_recovery_task(void);      // hard-wired Esc+Backspace (3 s) -> bootloader, independent of the keymap
+void        display_bootloader_notice(void); // shows "BOOTLOADER" on the LCD just before the jump

@@ -250,6 +250,14 @@ static uint32_t activity_elapsed(void) {
     return a < b ? a : b;
 }
 
+void display_bootloader_notice(void) {
+    if (sleeping) gpio_write_pin_high(PANEL_BKL);
+    qp_rect(lcd, 0, 0, PANEL_WIDTH - 1, PANEL_HEIGHT - 1, COL_BLACK, true);
+    text_centered(font14, 40, "BOOTLOADER", 0, 255, 255);
+    text_centered(font14, 66, "ready to flash", COL_DIM);
+    qp_flush(lcd);
+}
+
 void keyboard_post_init_kb(void) {
     // Stock firmware: SPI mode 0, 8-bit, manual CS. Mode 3 (as on the AK820) gave a blank panel here. Divisor 4 is verified.
     lcd = qp_gc9107_make_spi_device(PANEL_WIDTH, PANEL_HEIGHT, PANEL_CS, PANEL_DC, PANEL_RST, 4 /*divisor*/, 0 /*spi mode*/);
@@ -273,6 +281,7 @@ void keyboard_post_init_kb(void) {
 }
 
 void housekeeping_task_kb(void) {
+    f75max_recovery_task();          // first: must work whatever else is going on
     slider_task();
     module_task();
     {   // low battery: stop the RGB (the biggest load after the backlight) at <= 10% while on battery

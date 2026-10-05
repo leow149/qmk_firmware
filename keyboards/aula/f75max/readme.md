@@ -31,6 +31,7 @@ The Fn layer follows the stock firmware (decoded from the stock image and the F7
 | Fn+F7 ... F12 | previous, play/pause, next, mute, volume down, volume up |
 | Fn+U / I / O, Fn+Del, Fn+End | Print Screen / Scroll Lock / Pause, Insert, Home |
 | Fn+Esc | enter the bootloader (this firmware's own addition) |
+| Esc + Backspace, held 3 s | enter the bootloader; hard-wired (reads the raw matrix), so it works even if the keymap or VIA has removed Fn+Esc |
 
 ## Building
 
@@ -51,6 +52,7 @@ The patch targets ChibiOS-Contrib commit `5bed8690c4434309e3ab3e14348e70e588eb19
 Use [SonixFlasherC](https://github.com/SonixQMK/SonixFlasherC):
 
 * From a running QMK build: press **Fn+Esc**; the keyboard re-enumerates as `0C45:7140`.
+* If the keymap is broken: hold **Esc + Backspace for 3 seconds** (the LCD shows `BOOTLOADER`).
 * First time (still on the stock firmware): short the two pads **under the space bar** (they are covered by foam and insulation; they tie the MCU's BOOT pin, P1.3 = pin 74, to ground) while plugging in USB.
 
 ```sh

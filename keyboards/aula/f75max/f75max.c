@@ -130,3 +130,20 @@ bool rgb_matrix_indicators_kb(void) {
     }
     return true;
 }
+
+// ---- recovery chord ----------------------------------------------------------------------------------------
+// Hold Esc + Backspace for 3 s to enter the bootloader. It reads the raw key matrix (Esc = [0,0], Backspace = [1,13]),
+// so it works whatever the keymap says (VIA can remap Fn+Esc away) and in every connection mode.
+#define RECOVERY_HOLD_MS 3000
+void f75max_recovery_task(void) {
+    static uint32_t since = 0;
+    static bool     armed = false;
+    bool held = (matrix_get_row(0) & (1u << 0)) && (matrix_get_row(1) & (1u << 13));
+    if (!held) { armed = false; return; }
+    if (!armed) { armed = true; since = timer_read32(); return; }
+    if (timer_elapsed32(since) >= RECOVERY_HOLD_MS) {
+        display_bootloader_notice();
+        wait_ms(1000);                 // leave the message readable before the jump
+        reset_keyboard();
+    }
+}
