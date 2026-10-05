@@ -57,3 +57,6 @@
 
 // Idle sleep: backlight + RGB off after this long without key/knob/slider activity; any input wakes them.
 #define DISPLAY_SLEEP_TIMEOUT_MS (3UL * 60UL * 1000UL)
+
+// Caps Word: press both Shift keys together to start it (it also has a keycode, CW_TOGG).
+#define BOTH_SHIFTS_TURNS_ON_CAPS_WORD

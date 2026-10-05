@@ -11,3 +11,7 @@ BLUETOOTH_ENABLE = yes
 BLUETOOTH_DRIVER = custom
 SRC += bluetooth/ch582f_ajazz.c
 VPATH += bluetooth
+
+# Optional QMK features
+CAPS_WORD_ENABLE = yes
+TAP_DANCE_ENABLE = yes

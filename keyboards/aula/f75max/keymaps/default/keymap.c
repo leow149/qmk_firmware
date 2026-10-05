@@ -45,3 +45,12 @@ const uint16_t PROGMEM encoder_map[][NUM_ENCODERS][NUM_DIRECTIONS] = {
     [FN]  = { ENCODER_CCW_CW(RM_VALD, RM_VALU) },
 };
 #endif
+
+#ifdef TAP_DANCE_ENABLE
+// Example tap-dance actions. They do nothing until you assign TD(0) / TD(1) to a key (e.g. in VIA).
+enum { TD_ESC_GRV, TD_CTL_CAPS };
+tap_dance_action_t tap_dance_actions[] = {
+    [TD_ESC_GRV]  = ACTION_TAP_DANCE_DOUBLE(KC_ESC, KC_GRV),    // tap: Esc, double tap: `
+    [TD_CTL_CAPS] = ACTION_TAP_DANCE_DOUBLE(KC_LCTL, KC_CAPS),  // tap: Ctrl, double tap: Caps Lock
+};
+#endif
