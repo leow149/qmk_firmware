@@ -8,7 +8,7 @@ AULA F75 Max: 75% gasket keyboard with a rotary knob, a 128x128 LCD, per-key RGB
 
 ## Status
 
-Working on hardware: key matrix (6x15), Windows / Mac / Android layouts, the stock Fn layer, rotary knob (turn / push / Fn+turn), per-key RGB matrix (hardware PWM), Caps Lock LED, Windows-key lock (red Win LED), LCD (connection pill, battery gauge with charge bolt, layout card, link state, live RGB colour/brightness bar, Caps / Win-lock / Fn chips; drawn from primitives, updated per element without flicker), USB / Bluetooth (3 slots, remembered across reboots) / 2.4 GHz via the mode slider, battery percentage and charge state, idle sleep and USB-host-suspend sleep (backlight + RGB off), remote wakeup of the PC, low-battery RGB cut-off at <= 10 %, Caps Word (both Shift keys), mouse keys (USB only), tap dance (two example actions, `TD(0)` and `TD(1)`, active once assigned), VIA (build with `VIA_ENABLE = yes` in a `via` keymap; the VIA definition and keymap are distributed separately because QMK keeps VIA files out of its tree), Fn+Esc to enter the bootloader.
+Working on hardware: key matrix (6x15), Windows / Mac / Android layouts, the stock Fn layer, rotary knob (turn / push / Fn+turn), per-key RGB matrix (hardware PWM), Caps Lock LED, Windows-key lock (red Win LED), LCD (connection pill, battery gauge with charge bolt, layout card, link state, live RGB colour/brightness bar, Caps / Win-lock / Fn chips; drawn from primitives, updated per element without flicker), USB / Bluetooth (3 slots, remembered across reboots) / 2.4 GHz via the mode slider, battery percentage and charge state, idle sleep and USB-host-suspend sleep (backlight + RGB off), remote wakeup of the PC, low-battery RGB cut-off at <= 10 %, PC metrics page (CPU / GPU load and temperature, RAM, network; USB only, fed by `tools/f75max_metrics.py`; Fn + knob push switches pages), Caps Word (both Shift keys), mouse keys (USB only), tap dance (two example actions, `TD(0)` and `TD(1)`, active once assigned), VIA (build with `VIA_ENABLE = yes` in a `via` keymap; the VIA definition and keymap are distributed separately because QMK keeps VIA files out of its tree), Fn+Esc to enter the bootloader.
 
 Left disabled on purpose: combos and key overrides (they need personal definitions) and the hardware watchdog (the timer prescaler encoding is unverified on this part and the usual implementation replaces the bootloader-entry function).
 
@@ -30,8 +30,22 @@ The Fn layer follows the stock firmware (decoded from the stock image and the F7
 | Fn+F1 / F2 | browser home / mail |
 | Fn+F7 ... F12 | previous, play/pause, next, mute, volume down, volume up |
 | Fn+U / I / O, Fn+Del, Fn+End | Print Screen / Scroll Lock / Pause, Insert, Home |
+| Fn + knob push | switch the LCD between the status page and the PC metrics page |
 | Fn+Esc | enter the bootloader (this firmware's own addition) |
 | Esc + Backspace, held 3 s | enter the bootloader; hard-wired (reads the raw matrix), so it works even if the keymap or VIA has removed Fn+Esc |
+
+## PC metrics
+
+The second LCD page shows CPU and GPU load with temperature, RAM and network speed. A small host program sends the numbers over the keyboard's raw HID interface (USB only; the wireless link carries no data back to the keyboard):
+
+```sh
+pip install hidapi psutil            # required
+pip install nvidia-ml-py             # NVIDIA GPU
+pip install wmi                      # Windows: temperatures / AMD + Intel GPU via LibreHardwareMonitor
+python keyboards/aula/f75max/tools/f75max_metrics.py          # --demo sends test values, --once prints one sample
+```
+
+Anything the PC cannot provide shows as `--`; if the program stops, the page falls back to `--` after 4 seconds. Verified on Linux (CPU, RAM, network); the GPU and Windows paths are written but not yet tested on real hardware. The packet format is documented at the top of the script, and VIA keeps working alongside it.
 
 ## Building
 

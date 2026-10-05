@@ -11,6 +11,7 @@ enum f75max_keycodes {
     OS_AND,             // Fn+Q: Android layout
     OS_WIN,             // Fn+W: Windows layout
     OS_MAC,             // Fn+E: Mac layout
+    PG_TOG,             // Fn+knob push: switch the LCD between the status page and the PC metrics page
     F75MAX_SAFE_RANGE
 };
 
@@ -20,3 +21,5 @@ conn_mode_t f75max_conn_mode(void);
 void        f75max_load_config(void);        // restore the persisted Bluetooth slot (call before f75max_apply_mode)
 void        f75max_recovery_task(void);      // hard-wired Esc+Backspace (3 s) -> bootloader, independent of the keymap
 void        display_bootloader_notice(void); // shows "BOOTLOADER" on the LCD just before the jump
+bool        f75max_hid_command(uint8_t *data, uint8_t length); // raw-HID packet from the host; true if it was ours
+void        display_toggle_page(void);

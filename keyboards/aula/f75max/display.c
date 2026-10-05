@@ -76,7 +76,31 @@ typedef struct {
     uint16_t mode;                   // slider mode, link state, target slot
     uint16_t batt;                   // (percent << 2) | charge_state
     uint32_t rgb;                    // (enabled << 16) | (hue << 8) | bar width in pixels
+    uint8_t  page;                   // 0 = status, 1 = PC metrics
+    uint8_t  m_cpu, m_cput, m_gpu, m_gput, m_ram;   // metrics (0xFF = not available); only filled while page == 1
+    uint8_t  _pad;
+    uint32_t m_dn, m_up;             // network rate in kB/s (0xFFFFFFFF = not available)
 } ui_state_t;
+
+// ---- PC metrics, pushed by the host over raw HID (packet: [0]=0xC0, [1]=version, [2]=cpu %, [3]=cpu C, [4]=gpu %, [5]=gpu C,
+// [6]=ram %, [8..11]=down kB/s, [12..15]=up kB/s; 0xFF / 0xFFFFFFFF = not available). Stale after METRICS_TIMEOUT_MS. ----
+#define HID_CMD_METRICS   0xC0
+#define METRICS_TIMEOUT_MS 4000
+#define NA8  0xFF
+#define NA32 0xFFFFFFFFUL
+static struct { uint8_t cpu, cput, gpu, gput, ram; uint32_t dn, up; uint32_t stamp; bool have; } metrics;
+static uint8_t ui_page = 0;
+
+bool f75max_hid_command(uint8_t *data, uint8_t length) {
+    if (length < 16 || data[0] != HID_CMD_METRICS) return false;
+    metrics.cpu = data[2]; metrics.cput = data[3]; metrics.gpu = data[4]; metrics.gput = data[5]; metrics.ram = data[6];
+    metrics.dn  = (uint32_t)data[8]  | ((uint32_t)data[9]  << 8) | ((uint32_t)data[10] << 16) | ((uint32_t)data[11] << 24);
+    metrics.up  = (uint32_t)data[12] | ((uint32_t)data[13] << 8) | ((uint32_t)data[14] << 16) | ((uint32_t)data[15] << 24);
+    metrics.stamp = timer_read32();
+    metrics.have  = true;
+    return true;
+}
+void display_toggle_page(void) { ui_page ^= 1; }
 
 static ui_state_t shown;
 static bool       shown_valid = false;       // false forces a full repaint
@@ -86,6 +110,7 @@ static uint16_t mode_key(void) {
 }
 static ui_state_t ui_now(void) {
     ui_state_t s;
+    memset(&s, 0, sizeof(s));
     s.caps = host_keyboard_led_state().caps_lock ? 1 : 0;
     s.wl   = keymap_config.no_gui ? 1 : 0;
     s.fn   = layer_state_is(1) ? 1 : 0;
@@ -93,6 +118,13 @@ static ui_state_t ui_now(void) {
     s.mode = mode_key();
     s.batt = ((uint16_t)module_battery() << 2) | (uint16_t)module_charge_state();
     s.rgb  = ((uint32_t)(rgb_matrix_is_enabled() ? 1 : 0) << 16) | ((uint32_t)rgb_matrix_get_hue() << 8) | (uint32_t)((rgb_matrix_get_val() * 88 + 127) / 255);
+    s.page = ui_page;
+    s.m_cpu = s.m_cput = s.m_gpu = s.m_gput = s.m_ram = NA8;
+    s.m_dn = s.m_up = NA32;
+    if (ui_page && metrics.have && timer_elapsed32(metrics.stamp) < METRICS_TIMEOUT_MS) {
+        s.m_cpu = metrics.cpu; s.m_cput = metrics.cput; s.m_gpu = metrics.gpu; s.m_gput = metrics.gput; s.m_ram = metrics.ram;
+        s.m_dn = metrics.dn; s.m_up = metrics.up;
+    }
     return s;
 }
 
@@ -269,11 +301,86 @@ static void draw_chip_caps(const ui_state_t *s) { chip(4,  48, "CAPS", s->caps, 
 static void draw_chip_wl(const ui_state_t *s)   { chip(56, 32, "WL",   s->wl,   C_BAD);  }
 static void draw_chip_fn(const ui_state_t *s)   { chip(92, 32, "FN",   s->fn,   C_ACCENT); }
 
-// First frame (or after an explicit invalidate): clear the panel once, then paint everything.
-static void draw_full(const ui_state_t *s, bool clear) {
-    if (clear) qp_rect(lcd, 0, 0, PANEL_WIDTH - 1, PANEL_HEIGHT - 1, C_BG, true);
-    draw_conn(s);
-    draw_batt(s);
+// --- metrics page: CPU / GPU / RAM rows and a network row. Static parts (cards, labels) are drawn once per page switch;
+// updates only touch bars and value boxes, so a number changing never flashes the row. ---
+#define PINK_GPU 200, 170, 255
+static const int16_t ROW_Y[3] = {31, 56, 81};
+#define NET_Y 106
+
+static void temp_color(uint8_t t, uint8_t *h, uint8_t *sa, uint8_t *v) {
+    if (t < 60)      { *h = 88; *sa = 200; *v = 235; }
+    else if (t < 80) { *h = 28; *sa = 235; *v = 255; }
+    else             { *h = 0;  *sa = 230; *v = 255; }
+}
+static void draw_row_static(int row, const char *label) {
+    rrect(4, ROW_Y[row], 123, ROW_Y[row] + 21, 6, C_CARD);
+    TEXT(9, ROW_Y[row] + 5, font11, label, C_TXT2, C_CARD);
+}
+// pct / temp: 0xFF = not available. wide: RAM row (longer bar, "%" sign, no temperature).
+static void draw_row_values(int row, uint8_t pct, uint8_t temp, bool wide, uint8_t h, uint8_t sa, uint8_t v) {
+    const int16_t y = ROW_Y[row], bx0 = 41, bx1 = wide ? 91 : 70, n = bx1 - bx0 + 1;
+    int16_t w = (pct == NA8) ? 0 : (int16_t)(pct > 100 ? 100 : pct) * n / 100;
+    if (w > 0) qp_rect(lcd, bx0, y + 8, bx0 + w - 1, y + 13, h, sa, v, true);
+    if (w < n) qp_rect(lcd, bx0 + w, y + 8, bx1, y + 13, C_TRACK, true);
+    char t[8];
+    if (pct == NA8) snprintf(t, sizeof(t), "--");
+    else if (wide)  snprintf(t, sizeof(t), "%u%%", pct);
+    else            snprintf(t, sizeof(t), "%u", pct);
+    int16_t xr = wide ? 118 : 96, tw = qp_textwidth(font11, t);
+    qp_rect(lcd, bx1 + 2, y + 3, xr + 1, y + 18, C_CARD, true);                 // value box (right of the bar)
+    if (pct == NA8) TEXT(xr - tw, y + 5, font11, t, C_TXT3, C_CARD);
+    else            TEXT(xr - tw, y + 5, font11, t, C_TXT,  C_CARD);
+    if (!wide) {
+        qp_rect(lcd, 98, y + 3, 120, y + 18, C_CARD, true);                     // temperature box
+        if (temp != NA8) {
+            uint8_t th, ts, tv; temp_color(temp, &th, &ts, &tv);
+            snprintf(t, sizeof(t), "%u", temp);
+            int16_t ttw = qp_textwidth(font11, t), x = 115 - ttw;
+            TEXT(x, y + 5, font11, t, th, ts, tv, C_CARD);
+            qp_circle(lcd, x + ttw + 2, y + 7, 1, th, ts, tv, false);           // degree sign (the font has no glyph for it)
+        }
+    }
+}
+static void fmt_rate(char *out, size_t n, uint32_t k) {                          // kB/s -> "850K" / "1.2M" / "125M"
+    if (k == NA32)      snprintf(out, n, "--");
+    else if (k < 1000)  snprintf(out, n, "%luK", (unsigned long)k);
+    else if (k < 100000) snprintf(out, n, "%lu.%luM", (unsigned long)(k / 1000), (unsigned long)((k % 1000) / 100));
+    else                snprintf(out, n, "%luM", (unsigned long)((k + 500) / 1000));
+}
+static void draw_tri(int16_t x, int16_t y, bool down, uint8_t h, uint8_t sa, uint8_t v) {
+    for (int i = 0; i < 4; i++) {
+        int16_t yy = down ? y + i : y + 3 - i;
+        qp_line(lcd, x + i, yy, x + 8 - i, yy, h, sa, v);
+    }
+}
+static void draw_net_static(void) {
+    rrect(4, NET_Y, 123, NET_Y + 18, 6, C_CARD);
+    draw_tri(10, NET_Y + 7, true,  C_ACCENT);
+    draw_tri(68, NET_Y + 7, false, 28, 200, 255);
+}
+static void draw_net_values(uint32_t dn, uint32_t up) {
+    char t[10];
+    qp_rect(lcd, 21, NET_Y + 3, 62, NET_Y + 15, C_CARD, true);
+    fmt_rate(t, sizeof(t), dn);
+    if (dn == NA32) TEXT(22, NET_Y + 3, font11, t, C_TXT3, C_CARD);
+    else            TEXT(22, NET_Y + 3, font11, t, C_TXT,  C_CARD);
+    qp_rect(lcd, 79, NET_Y + 3, 120, NET_Y + 15, C_CARD, true);
+    fmt_rate(t, sizeof(t), up);
+    if (up == NA32) TEXT(80, NET_Y + 3, font11, t, C_TXT3, C_CARD);
+    else            TEXT(80, NET_Y + 3, font11, t, C_TXT,  C_CARD);
+}
+static void draw_metrics_static(void) {
+    draw_row_static(0, "CPU"); draw_row_static(1, "GPU"); draw_row_static(2, "RAM"); draw_net_static();
+}
+static void draw_metrics_values(const ui_state_t *s, const ui_state_t *prev) {
+    if (!prev || s->m_cpu != prev->m_cpu || s->m_cput != prev->m_cput) draw_row_values(0, s->m_cpu, s->m_cput, false, C_ACCENT);
+    if (!prev || s->m_gpu != prev->m_gpu || s->m_gput != prev->m_gput) draw_row_values(1, s->m_gpu, s->m_gput, false, PINK_GPU);
+    if (!prev || s->m_ram != prev->m_ram)                                draw_row_values(2, s->m_ram, NA8, true, C_OK);
+    if (!prev || s->m_dn != prev->m_dn || s->m_up != prev->m_up)         draw_net_values(s->m_dn, s->m_up);
+}
+
+// --- body of the status page (everything under the header) ---
+static void draw_status_body(const ui_state_t *s) {
     draw_card();
     draw_logo(s);
     draw_name(s);
@@ -284,6 +391,18 @@ static void draw_full(const ui_state_t *s, bool clear) {
     draw_chip_wl(s);
     draw_chip_fn(s);
 }
+static void draw_body(const ui_state_t *s) {
+    if (s->page) { draw_metrics_static(); draw_metrics_values(s, NULL); }
+    else         { draw_status_body(s); }
+}
+
+// First frame (or after an explicit invalidate): clear the panel once (optionally), then paint everything.
+static void draw_full(const ui_state_t *s, bool clear) {
+    if (clear) qp_rect(lcd, 0, 0, PANEL_WIDTH - 1, PANEL_HEIGHT - 1, C_BG, true);
+    draw_conn(s);
+    draw_batt(s);
+    draw_body(s);
+}
 
 // Paint only what differs from what the panel already shows.
 static void draw_state(void) {
@@ -292,13 +411,20 @@ static void draw_state(void) {
         draw_full(&n, true);
         shown_valid = true;
     } else {
-        if (n.mode != shown.mode) { draw_conn(&n); draw_caption(&n); }
-        if (n.os != shown.os)     { draw_logo(&n); draw_name(&n); }
+        if (n.mode != shown.mode) { draw_conn(&n); if (!n.page) draw_caption(&n); }
         if (n.batt != shown.batt) draw_batt(&n);
-        if (n.rgb != shown.rgb)   draw_rgb(&n, &shown);
-        if (n.caps != shown.caps) draw_chip_caps(&n);
-        if (n.wl != shown.wl)     draw_chip_wl(&n);
-        if (n.fn != shown.fn)     draw_chip_fn(&n);
+        if (n.page != shown.page) {                                  // page switch: clear the body once, paint the new page
+            qp_rect(lcd, 0, 28, PANEL_WIDTH - 1, PANEL_HEIGHT - 1, C_BG, true);
+            draw_body(&n);
+        } else if (!n.page) {
+            if (n.os != shown.os)     { draw_logo(&n); draw_name(&n); }
+            if (n.rgb != shown.rgb)   draw_rgb(&n, &shown);
+            if (n.caps != shown.caps) draw_chip_caps(&n);
+            if (n.wl != shown.wl)     draw_chip_wl(&n);
+            if (n.fn != shown.fn)     draw_chip_fn(&n);
+        } else {
+            draw_metrics_values(&n, &shown);
+        }
     }
     shown = n;
     qp_flush(lcd);

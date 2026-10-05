@@ -113,6 +113,9 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
                 eeconfig_update_keymap(&keymap_config);
             }
             return false;
+        case PG_TOG:
+            if (record->event.pressed) display_toggle_page();
+            return false;
         case BT24G:
             if (record->event.pressed && wireless_mode == MODE_24G) {
                 ch582_set_profile(CH582_PROFILE_PEER_24G);
@@ -159,3 +162,10 @@ void f75max_recovery_task(void) {
         reset_keyboard();
     }
 }
+
+// ---- raw HID: PC metrics from the host (see tools/f75max_metrics.py). VIA's own commands are untouched. ----
+#ifdef VIA_ENABLE
+bool via_command_kb(uint8_t *data, uint8_t length) { return f75max_hid_command(data, length); }
+#else
+void raw_hid_receive(uint8_t *data, uint8_t length) { f75max_hid_command(data, length); }
+#endif

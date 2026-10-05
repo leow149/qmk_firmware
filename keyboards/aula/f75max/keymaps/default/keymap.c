@@ -21,7 +21,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         /*5*/ { KC_LCTL, KC_LGUI,KC_LALT,___,    ___,    ___,    KC_SPC, ___,    ___,    ___,     KC_RALT, FN_,     KC_LEFT, KC_DOWN, KC_RGHT },
     },
     [FN] = {
-        /*0*/ { QK_BOOT, KC_WHOM,KC_MAIL,_______,_______,RM_VALD,RM_VALU,KC_MPRV,KC_MPLY,KC_MNXT, KC_MUTE, KC_VOLD, KC_VOLU, ___,     _______ },
+        /*0*/ { QK_BOOT, KC_WHOM,KC_MAIL,_______,_______,RM_VALD,RM_VALU,KC_MPRV,KC_MPLY,KC_MNXT, KC_MUTE, KC_VOLD, KC_VOLU, ___,     PG_TOG  },
         /*1*/ { BT_PAIR, BT1,    BT2,    BT3,    _______,_______,_______,_______,_______,_______, _______, _______, _______, _______, KC_INS  },
         /*2*/ { RM_HUEU, OS_AND, OS_WIN, OS_MAC, BT24G,  _______,_______,KC_PSCR,KC_SCRL,KC_PAUS, _______, _______, _______, _______, _______ },
         /*3*/ { _______, _______,_______,_______,_______,_______,_______,_______,_______,_______, _______, _______, ___,     _______, _______ },
