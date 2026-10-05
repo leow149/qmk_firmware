@@ -88,8 +88,8 @@ static ui_state_t ui_now(void) {
     ui_state_t s;
     s.caps = host_keyboard_led_state().caps_lock ? 1 : 0;
     s.wl   = keymap_config.no_gui ? 1 : 0;
-    s.fn   = layer_state_is(2) ? 1 : 0;
-    s.os   = (default_layer_state & (1UL << 1)) ? 1 : 0;
+    s.fn   = layer_state_is(1) ? 1 : 0;
+    s.os   = keymap_config.swap_lalt_lgui ? 1 : 0;      // Mac = Alt/Win swapped
     s.mode = mode_key();
     s.batt = ((uint16_t)module_battery() << 2) | (uint16_t)module_charge_state();
     s.rgb  = ((uint32_t)(rgb_matrix_is_enabled() ? 1 : 0) << 16) | ((uint32_t)rgb_matrix_get_hue() << 8) | (uint32_t)((rgb_matrix_get_val() * 88 + 127) / 255);

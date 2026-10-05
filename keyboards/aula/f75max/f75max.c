@@ -30,6 +30,9 @@ void early_hardware_init_post(void) {
 #include "connection.h"
 #include "timer.h"
 #include "f75max.h"
+#ifdef VIA_ENABLE
+#    include "via.h"
+#endif
 
 #define BT_PAIR_HOLD_MS 1000
 static conn_mode_t     wireless_mode   = MODE_USB;
@@ -39,16 +42,25 @@ static bool            bt_pair_armed   = false;
 
 conn_mode_t f75max_conn_mode(void) { return wireless_mode; }
 
-typedef struct __attribute__((packed)) { uint8_t bt_profile; uint8_t _pad[3]; } kb_config_t;
+#define LAYOUT_VER 2   // 1 = Mac was a separate layer (Fn = layer 2); 2 = Mac is QMK's Alt/Win swap (Fn = layer 1)
+typedef struct __attribute__((packed)) { uint8_t bt_profile; uint8_t layout_ver; uint8_t _pad[2]; } kb_config_t;
 static kb_config_t kb_config;
 
 void f75max_load_config(void) {
     eeconfig_read_kb_datablock(&kb_config, 0, sizeof(kb_config));
     if (kb_config.bt_profile >= CH582_PROFILE_BT_1 && kb_config.bt_profile <= CH582_PROFILE_BT_3)
         last_bt_profile = (ch582_profile_t)kb_config.bt_profile;     // otherwise keep the default (slot 1)
-    // Restore the saved layout (Windows/Android = layer 0, Mac = layer 1). Ignore anything else so we can never end up with no layer.
-    layer_state_t dl = eeconfig_read_default_layer();
-    if (dl == (1UL << 0) || dl == (1UL << 1)) default_layer_set(dl);
+    // Layouts used to be separate layers (Mac = layer 1, Fn = layer 2). A saved default layer or VIA keymap from that scheme
+    // would now point at the wrong layers (Fn as the base layer, Fn key to a layer that does not exist), so reset them once.
+    if (kb_config.layout_ver != LAYOUT_VER) {
+        eeconfig_update_default_layer(1UL << 0);
+        default_layer_set(1UL << 0);
+#ifdef VIA_ENABLE
+        eeconfig_init_via();
+#endif
+        kb_config.layout_ver = LAYOUT_VER;
+        eeconfig_update_kb_datablock(&kb_config, 0, sizeof(kb_config));
+    }
 }
 // Write only when the slot actually changed: the EEPROM emulation lives in flash.
 static void save_bt_profile(ch582_profile_t p) {
@@ -94,12 +106,12 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
                 if (timer_elapsed(bt_pair_timer) >= BT_PAIR_HOLD_MS) ch582_enter_pairing();
             }
             return false;
-        // OS layouts (persisted default layer): Android and Windows share the Windows layout, Mac swaps Alt/Win.
-        case OS_AND: case OS_WIN:
-            if (record->event.pressed) { eeconfig_update_default_layer(1UL << 0); default_layer_set(1UL << 0); }
-            return false;
-        case OS_MAC:
-            if (record->event.pressed) { eeconfig_update_default_layer(1UL << 1); default_layer_set(1UL << 1); }
+        // OS layouts: Android and Windows share the Windows layout, Mac uses QMK's Alt<->Win swap (saved in EEPROM by QMK).
+        case OS_AND: case OS_WIN: case OS_MAC:
+            if (record->event.pressed) {
+                keymap_config.swap_lalt_lgui = keymap_config.swap_ralt_rgui = (keycode == OS_MAC);
+                eeconfig_update_keymap(&keymap_config);
+            }
             return false;
         case BT24G:
             if (record->event.pressed && wireless_mode == MODE_24G) {
