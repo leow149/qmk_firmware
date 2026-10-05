@@ -5,11 +5,11 @@
 //    format         | mono4
 //    unicode_glyphs | 
 //    output         | graphics
-//    input          | opensans34.png
+//    input          | opensans22.png
 
 #pragma once
 
 #include <qp.h>
 
-extern const uint32_t font_opensans34_length;
-extern const uint8_t  font_opensans34[15348];
+extern const uint32_t font_opensans22_length;
+extern const uint8_t  font_opensans22[6714];

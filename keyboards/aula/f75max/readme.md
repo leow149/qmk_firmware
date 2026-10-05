@@ -8,7 +8,7 @@ AULA F75 Max: 75% gasket keyboard with a rotary knob, a 128x128 LCD, per-key RGB
 
 ## Status
 
-Working on hardware: key matrix (6x15), Windows / Mac / Android layouts, the stock Fn layer, rotary knob (turn / push / Fn+turn), per-key RGB matrix (hardware PWM), Caps Lock LED, Windows-key lock (red Win LED), LCD (connection icon and state, battery gauge with charge bolt, layout name, Caps / Win-lock / Fn chips, all drawn from primitives), USB / Bluetooth (3 slots, remembered across reboots) / 2.4 GHz via the mode slider, battery percentage and charge state, idle sleep and USB-host-suspend sleep (backlight + RGB off), remote wakeup of the PC, low-battery RGB cut-off at <= 10 %, Caps Word (both Shift keys), mouse keys (USB only), tap dance (two example actions, `TD(0)` and `TD(1)`, active once assigned), VIA (build with `VIA_ENABLE = yes` in a `via` keymap; the VIA definition and keymap are distributed separately because QMK keeps VIA files out of its tree), Fn+Esc to enter the bootloader.
+Working on hardware: key matrix (6x15), Windows / Mac / Android layouts, the stock Fn layer, rotary knob (turn / push / Fn+turn), per-key RGB matrix (hardware PWM), Caps Lock LED, Windows-key lock (red Win LED), LCD (connection pill, battery gauge with charge bolt, layout card, link state, live RGB colour/brightness bar, Caps / Win-lock / Fn chips; drawn from primitives, updated per element without flicker), USB / Bluetooth (3 slots, remembered across reboots) / 2.4 GHz via the mode slider, battery percentage and charge state, idle sleep and USB-host-suspend sleep (backlight + RGB off), remote wakeup of the PC, low-battery RGB cut-off at <= 10 %, Caps Word (both Shift keys), mouse keys (USB only), tap dance (two example actions, `TD(0)` and `TD(1)`, active once assigned), VIA (build with `VIA_ENABLE = yes` in a `via` keymap; the VIA definition and keymap are distributed separately because QMK keeps VIA files out of its tree), Fn+Esc to enter the bootloader.
 
 Left disabled on purpose: combos and key overrides (they need personal definitions) and the hardware watchdog (the timer prescaler encoding is unverified on this part and the usual implementation replaces the bootloader-entry function).
 
@@ -75,6 +75,7 @@ Recovery: the MCU's boot ROM cannot be overwritten, so the pads always work. Res
 | Wireless module | UART2 115200 8N1: TX B7, RX B6 |
 | Charger status | B16 (CHRG, low = charging), B17 (STDBY, low = full) |
 
+The panel needs about 150 ms after the RST pulse before its first command (QMK's built-in reset waits only 20 ms), so `display.c` pulses RST itself; without that the screen could stay blank after a soft reboot such as flashing.
 The LCD must use **SPI mode 0**; the panel init sequence is the one the stock firmware sends (overridden in `display.c`), with `MADCTL 0xD8`.
 The RGB scan (PWM) interrupt must stay more urgent than the SPI interrupt (see `mcuconf.h`), otherwise every LCD redraw makes the whole matrix flash.
 
